@@ -98,7 +98,7 @@ func (c *Coordinator) GiveMapTask(args *MapTaskArgs, reply *MapTaskReply) error 
 	c.issuedMapMutex.Lock()
 
 	// 1. If current Map state is Done.
-	// When it reads the state, we need to release a lock.
+	// After it reads the state, we need to release a lock.
 	if c.mapDone {
 		c.issuedMapMutex.Unlock()
 		mapDoneProcess(reply)
@@ -154,58 +154,58 @@ func getNowTimeSecond() int64 {
 	return time.Now().UnixNano() / int64(time.Second)
 }
 
-//// MapTaskJoinArgs : We need to know which worker is timed out and the fileId it works on.
-//type MapTaskJoinArgs struct {
-//	FileId   int
-//	WorkerId int
-//}
-//
-//// MapTaskJoinReply : we need to know if we successfully join in a stale task.
-//type MapTaskJoinReply struct {
-//	Accept bool
-//}
-//
-//
-//// JoinMapTask : Join in the MapTask BlockQueue if there is a worker timed out.
-//func (c *Coordinator) JoinMapTask(args *MapTaskJoinArgs, reply *MapTaskJoinReply) error {
-//	// Check if there is a worker has timed out.
-//	log.Printf("got join request from worker %v on file %v \n", args.WorkerId, args.FileId)
-//
-//	c.issuedMapMutex.Lock()
-//
-//	curTime := getNowTimeSecond()
-//	taskTime := c.mapTasks[args.FileId].beginSecond
-//	// If fileId is not in the issuedTask, there is a wrong, and we don't reassign the task.
-//	if !c.issuedMapTasks.Has(args.FileId) {
-//		log.Printf("task abandoned or does not exists, ignoring...")
-//		c.issuedMapMutex.Unlock()
-//		reply.Accept = false
-//		return nil
-//	}
-//	// If the assigned workerId is not the same as args.WorkerId, there is a wrong.
-//	if c.mapTasks[args.FileId].workerId != args.WorkerId {
-//		log.Printf("map task belongs to worker %v not this %v, ignoring...", c.mapTasks[args.FileId].workerId,
-//			args.WorkerId)
-//		c.issuedMapMutex.Unlock()
-//		reply.Accept = false
-//		return nil
-//	}
-//
-//	// If there is no wrong, we start to reassign the task.
-//	if curTime-taskTime > maxTaskTime {
-//		log.Printf("task exceeds max wait time, abandoning...")
-//		reply.Accept = false
-//		// Reassign the task and put FileId into unIssuedMapTasks Set.
-//		c.unIssuedMapTasks.PutFront(args.FileId)
-//	} else {
-//		log.Printf("task within max wait time, accepting...")
-//		reply.Accept = true
-//		c.issuedMapTasks.Remove(args.FileId)
-//	}
-//
-//	c.issuedMapMutex.Unlock()
-//	return nil
-//}
+// MapTaskJoinArgs : We need to know which worker is timed out and the fileId it works on.
+type MapTaskJoinArgs struct {
+	FileId   int
+	WorkerId int
+}
+
+// MapTaskJoinReply : we need to know if we successfully join in a stale task.
+type MapTaskJoinReply struct {
+	Accept bool
+}
+
+// JoinMapTask : Join in the MapTask BlockQueue after map task is done(timeout or in time)
+func (c *Coordinator) JoinMapTask(args *MapTaskJoinArgs, reply *MapTaskJoinReply) error {
+	// Check if there is a worker has timed out.
+	log.Printf("got join request from worker %v on file %v \n", args.WorkerId, args.FileId)
+
+	c.issuedMapMutex.Lock()
+
+	curTime := getNowTimeSecond()
+	taskTime := c.mapTasks[args.FileId].beginSecond
+	// If fileId is not in the issuedTask, there is a wrong, and we don't reassign the task.
+	if !c.issuedMapTasks.Has(args.FileId) {
+		log.Printf("task abandoned or does not exists, ignoring...")
+		c.issuedMapMutex.Unlock()
+		reply.Accept = false
+		return nil
+	}
+	// If the assigned workerId is not the same as args.WorkerId, there is a wrong.
+	if c.mapTasks[args.FileId].workerId != args.WorkerId {
+		log.Printf("map task belongs to worker %v not this %v, ignoring...", c.mapTasks[args.FileId].workerId,
+			args.WorkerId)
+		c.issuedMapMutex.Unlock()
+		reply.Accept = false
+		return nil
+	}
+
+	// If there is no wrong, we start to reassign the task.
+	if curTime-taskTime > maxTaskTime {
+		log.Printf("task exceeds max wait time, abandoning...")
+		reply.Accept = false
+		// Reassign the task and put FileId into unIssuedMapTasks Set.
+		c.unIssuedMapTasks.PutFront(args.FileId)
+		// I think we need to remove args.FIleId from issuedMapTasks in this stage.
+	} else {
+		log.Printf("task within max wait time, accepting...")
+		reply.Accept = true
+		c.issuedMapTasks.Remove(args.FileId)
+	}
+
+	c.issuedMapMutex.Unlock()
+	return nil
+}
 
 type ReduceTaskArgs struct {
 	WorkerId int // assigned to which worker.
@@ -270,50 +270,51 @@ func (c *Coordinator) GiveReduceTask(args *ReduceTaskArgs, reply *ReduceTaskRepl
 
 // Manage rejoin the Reduce Task
 
-//type ReduceTaskJoinArgs struct {
-//	WorkerId int
-//	rIdx     int
-//}
-//
-//type ReduceTaskJoinReply struct {
-//	Accept bool
-//}
-//
-//func (c *Coordinator) JoinReduceTask(args *ReduceTaskJoinArgs, reply *ReduceTaskJoinReply) error {
-//	// Check the request from which worker and which reduce task.
-//	log.Printf("got rejoin request from worker %v in reduce task %v", args.WorkerId, args.rIdx)
-//
-//	curTime := getNowTimeSecond()
-//	taskTime := c.reduceTasks[args.rIdx].beginSecond
-//	c.issuedReduceMutex.Lock()
-//
-//	if !c.issuedReduceTasks.Has(args.rIdx) {
-//		log.Printf("task abandoned or does not exists, ignoring...")
-//		c.issuedReduceMutex.Unlock()
-//		reply.Accept = false
-//		return nil
-//	}
-//
-//	if args.WorkerId != c.reduceTasks[args.rIdx].workerId {
-//		log.Printf("reduce task belongs to worker %v, not this %v, ignoring...", args.WorkerId, c.reduceTasks[args.rIdx].workerId)
-//		c.issuedReduceMutex.Unlock()
-//		reply.Accept = false
-//		return nil
-//	}
-//
-//	if curTime-taskTime > maxTaskTime {
-//		log.Printf("reduce task exceeds max wait time, abandoning...")
-//		reply.Accept = false
-//		c.unIssuedReduceTasks.PutFront(args.rIdx)
-//	} else {
-//		log.Printf("reduce task within max wait time, accepting...")
-//		reply.Accept = true
-//		c.issuedReduceTasks.Remove(args.rIdx)
-//	}
-//
-//	c.issuedReduceMutex.Unlock()
-//	return nil
-//}
+type ReduceTaskJoinArgs struct {
+	WorkerId int
+	rIdx     int
+}
+
+type ReduceTaskJoinReply struct {
+	Accept bool
+}
+
+func (c *Coordinator) JoinReduceTask(args *ReduceTaskJoinArgs, reply *ReduceTaskJoinReply) error {
+	// Check the request from which worker and which reduce task.
+	log.Printf("got rejoin request from worker %v in reduce task %v", args.WorkerId, args.rIdx)
+
+	curTime := getNowTimeSecond()
+	taskTime := c.reduceTasks[args.rIdx].beginSecond
+	c.issuedReduceMutex.Lock()
+
+	if !c.issuedReduceTasks.Has(args.rIdx) {
+		log.Printf("task abandoned or does not exists, ignoring...")
+		c.issuedReduceMutex.Unlock()
+		reply.Accept = false
+		return nil
+	}
+
+	if args.WorkerId != c.reduceTasks[args.rIdx].workerId {
+		log.Printf("reduce task belongs to worker %v, not this %v, ignoring...", args.WorkerId, c.reduceTasks[args.rIdx].workerId)
+		c.issuedReduceMutex.Unlock()
+		reply.Accept = false
+		return nil
+	}
+
+	if curTime-taskTime > maxTaskTime {
+		log.Printf("reduce task exceeds max wait time, abandoning...")
+		reply.Accept = false
+		c.unIssuedReduceTasks.PutFront(args.rIdx)
+
+	} else {
+		log.Printf("reduce task within max wait time, accepting...")
+		reply.Accept = true
+		c.issuedReduceTasks.Remove(args.rIdx)
+	}
+
+	c.issuedReduceMutex.Unlock()
+	return nil
+}
 
 // Remove timeout Map task from issuedMapTasks and add it into unIssuedMapTask Queue.
 func (m *MapSet) removeTimeoutMapTasks(mapTasks []MapTaskState, unIssuedMapTasks *BlockQueue) {
